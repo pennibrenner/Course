@@ -1,0 +1,467 @@
+def get_data_loaders(
+    batch_size: int = 32, valid_size: float = 0.2, num_workers: int = 1, limit: int = -1
+):
+    """
+    Create and returns the train_one_epoch, validation and test data loaders.
+
+    :param batch_size: size of the mini-batches
+    :param valid_size: fraction of the dataset to use for validation. For example 0.2
+                       means that 20% of the dataset will be used for validation
+    :param num_workers: number of workers to use in the data loaders. Use num_workers=1. 
+    :param limit: maximum number of data points to consider
+    :return a dictionary with 3 keys: 'train_one_epoch', 'valid' and 'test' containing respectively the
+            train_one_epoch, validation and test data loaders
+    """
+
+    # We will fill this up later
+    data_loaders = {"train": None, "valid": None, "test": None}
+
+    base_path = Path(get_data_location())
+
+    # Compute mean and std of the dataset
+    mean, std = compute_mean_and_std()
+    print(f"Dataset mean: {mean}, std: {std}")
+
+    # YOUR CODE HERE:
+    # create 3 sets of data transforms: one for the training dataset,
+    # containing data augmentation, one for the validation dataset
+    # (without data augmentation) and one for the test set (again
+    # without augmentation)
+    # HINT: resize the image to 256 first, then crop them to 224, then add the
+    # appropriate transforms for that step
+    data_transforms = {
+        "train": transforms.Compose(
+            [transforms.Resize(256),
+            transforms.RandomAffine(scale=(0.9, 1.1), translate=(0.1, 0.1), degrees=10),
+            transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.5),
+            transforms.RandomHorizontalFlip(0.5),
+            transforms.RandomCrop(224, padding_mode="reflect", pad_if_needed=True),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean.tolist(), std=std.tolist())
+         
+            
+            ]),
+        "valid": transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean.tolist(), std=std.tolist())
+        ]),
+        "test": transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean.tolist(), std=std.tolist())
+        ]),
+    }
+
+    # Create train and validation datasets
+    train_data = datasets.ImageFolder(
+        base_path / "train",
+        transform=data_transforms["train"]
+    )
+    # The validation dataset is a split from the train_one_epoch dataset, so we read
+    # from the same folder, but we apply the transforms for validation
+    valid_data = datasets.ImageFolder(
+        base_path / "train",
+        transform=data_transforms["valid"]
+    )
+
+    # obtain training indices that will be used for validation
+    n_tot = len(train_data)
+    indices = torch.randperm(n_tot)
+
+    # If requested, limit the number of data points to consider
+    if limit > 0:
+        indices = indices[:limit]
+        n_tot = limit
+
+    split = int(math.ceil(valid_size * n_tot))
+    train_idx, valid_idx = indices[split:], indices[:split]
+
+    # define samplers for obtaining training and validation batches
+    train_sampler = torch.utils.data.SubsetRandomSampler(train_idx)
+    valid_sampler  = torch.utils.data.SubsetRandomSampler(valid_idx)
+
+    # prepare data loaders
+    data_loaders["train"] = torch.utils.data.DataLoader(
+        train_data,
+        batch_size=batch_size,
+        sampler=train_sampler,
+        num_workers=num_workers,
+    )
+    data_loaders["valid"] = torch.utils.data.DataLoader(
+        valid_data,
+        batch_size=batch_size,
+        sampler=valid_sampler,
+        num_workers=num_workers
+    )
+
+    # Now create the test data loader
+    test_data = datasets.ImageFolder(
+        base_path / "test",
+        transform=data_transforms["test"]
+    )
+
+    if limit > 0:
+        indices = torch.arange(limit)
+        test_sampler = torch.utils.data.SubsetRandomSampler(indices)
+    else:
+        test_sampler = None
+
+    data_loaders["test"] = torch.utils.data.DataLoader(
+        test_data,
+        batch_size=batch_size,
+        sampler=test_sampler,
+        num_workers=num_workers,
+        shuffle=False
+    )
+
+    return data_loaders
+
+
+def visualize_one_batch(data_loaders, max_n: int = 5):
+    """
+    Visualize one batch of data.
+
+    :param data_loaders: dictionary containing data loaders
+    :param max_n: maximum number of images to show
+    :return: None
+    """
+
+    # YOUR CODE HERE:
+    # obtain one batch of training images
+    # First obtain an iterator from the train dataloader
+    dataiter  = iter(data_loaders["train"])
+    # Then call the .next() method on the iterator you just
+    # obtained
+    images, labels  = next(dataiter)
+
+    # Undo the normalization (for visualization purposes)
+    mean, std = compute_mean_and_std()
+    invTrans = transforms.Compose(
+        [
+            transforms.Normalize(mean=[0.0, 0.0, 0.0], std=1 / std),
+            transforms.Normalize(mean=-mean, std=[1.0, 1.0, 1.0]),
+        ]
+    )
+
+    images = invTrans(images)
+
+    # YOUR CODE HERE:
+    # Get class names from the train data loader
+    class_names  = data_loaders["train"].dataset.classes
+
+    # Convert from BGR (the format used by pytorch) to
+    # RGB (the format expected by matplotlib)
+    images = torch.permute(images, (0, 2, 3, 1)).clip(0, 1)
+
+    # plot the images in the batch, along with the corresponding labels
+    fig = plt.figure(figsize=(25, 4))
+    for idx in range(max_n):
+        ax = fig.add_subplot(1, max_n, idx + 1, xticks=[], yticks=[])
+        ax.imshow(images[idx])
+        # print out the correct label for each image
+        # .item() gets the value contained in a Tensor
+        ax.set_title(class_names[labels[idx].item()])
+
+# define the CNN architecture
+class MyModel(nn.Module):
+    def __init__(self, num_classes: int = 1000, dropout: float = 0.7) -> None:
+
+        super().__init__()
+
+        #create layers
+        self.model = nn.Sequential(
+            #first conv + maxpool + relu
+            nn.Conv2d(3, 32, 3, stride=1, padding=1),
+            nn.MaxPool2d(2, 2, 0),
+            nn.ReLU(),
+            nn.Dropout2d(0.2),
+            
+            #second conv + maxpool + relu
+            nn.Conv2d(32, 64, 3, stride=1, padding=1),
+            nn.MaxPool2d(2, 2, 0),
+            nn.ReLU(),
+            nn.Dropout2d(0.2),
+            
+            #third conv + maxpool + relu
+            nn.Conv2d(64, 128, 3, stride=1, padding=1),
+            nn.MaxPool2d(2, 2, 0),
+            nn.ReLU(),
+            nn.Dropout2d(0.2),
+            
+            #fourth conv + maxpool + relu
+            nn.Conv2d(128, 256, 3, stride=1, padding=1),
+            nn.MaxPool2d(2, 2, 0),
+            nn.ReLU(),
+            nn.Dropout2d(0.2),
+            
+            #fifth conv + maxpool + relu
+            nn.Conv2d(256, 512, 3, stride=1, padding=1),
+            nn.MaxPool2d(2, 2, 0),
+            nn.ReLU(),
+            nn.Dropout2d(0.2),
+            
+            #flatten feature maps
+            nn.Flatten(),
+            
+            #fully connected layers
+            nn.Linear(25088, 512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, num_classes)
+        )
+          
+    def forward(self, x):
+        # YOUR CODE HERE: process the input tensor through the
+        # feature extractor, the pooling and the final linear
+        # layers (if appropriate for the architecture chosen)
+        return self.model(x)
+
+def get_loss():
+    """
+    Get an instance of the CrossEntropyLoss (useful for classification),
+    optionally moving it to the GPU if use_cuda is set to True
+    """
+
+    # YOUR CODE HERE: select a loss appropriate for classification
+    loss  = nn.CrossEntropyLoss()
+
+    return loss
+
+
+def get_optimizer(
+    model: nn.Module,
+    optimizer: str = "SGD",
+    learning_rate: float = 0.01,
+    momentum: float = 0.5,
+    weight_decay: float = 0,
+):
+    """
+    Returns an optimizer instance
+
+    :param model: the model to optimize
+    :param optimizer: one of 'SGD' or 'Adam'
+    :param learning_rate: the learning rate
+    :param momentum: the momentum (if the optimizer uses it)
+    :param weight_decay: regularization coefficient
+    """
+    if optimizer.lower() == "sgd":
+        # YOUR CODE HERE: create an instance of the SGD
+        # optimizer. Use the input parameters learning_rate, momentum
+        # and weight_decay
+        opt = torch.optim.SGD(
+            model.parameters(),
+            lr=learning_rate,
+            momentum=momentum,
+            weight_decay=weight_decay
+        )
+
+    elif optimizer.lower() == "adam":
+        # YOUR CODE HERE: create an instance of the Adam
+        # optimizer. Use the input parameters learning_rate, momentum
+        # and weight_decay
+        opt = torch.optim.Adam(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay
+        )
+    else:
+        raise ValueError(f"Optimizer {optimizer} not supported")
+
+    return opt
+
+def train_one_epoch(train_dataloader, model, optimizer, loss):
+    """
+    Performs one train_one_epoch epoch
+    """
+
+    if torch.cuda.is_available():
+        model = model.cuda()
+
+    model.train()
+    
+    train_loss = 0.0
+
+    for batch_idx, (data, target) in tqdm(
+        enumerate(train_dataloader),
+        desc="Training",
+        total=len(train_dataloader),
+        leave=True,
+        ncols=80,
+    ):
+        # move data to GPU
+        if torch.cuda.is_available():
+            data, target = data.cuda(), target.cuda()
+
+        # 1. clear the gradients of all optimized variables
+        optimizer.zero_grad()
+        # 2. forward pass: compute predicted outputs by passing inputs to the model
+        output  = model(data)
+        # 3. calculate the loss
+        loss_value  = loss(output, target)
+        # 4. backward pass: compute gradient of the loss with respect to model parameters
+        loss_value.backward()
+        # 5. perform a single optimization step (parameter update)
+        optimizer.step()
+
+        # update average training loss
+        train_loss = train_loss + (
+            (1 / (batch_idx + 1)) * (loss_value.data.item() - train_loss)
+        )
+
+    return train_loss
+
+
+def valid_one_epoch(valid_dataloader, model, loss):
+    """
+    Validate at the end of one epoch
+    """
+
+    with torch.no_grad():
+
+        # set the model to evaluation mode
+        model.eval()
+
+        if torch.cuda.is_available():
+            model.cuda()
+
+        valid_loss = 0.0
+        for batch_idx, (data, target) in tqdm(
+            enumerate(valid_dataloader),
+            desc="Validating",
+            total=len(valid_dataloader),
+            leave=True,
+            ncols=80,
+        ):
+            # move data to GPU
+            if torch.cuda.is_available():
+                data, target = data.cuda(), target.cuda()
+
+            # 1. forward pass: compute predicted outputs by passing inputs to the model
+            output  = model(data)
+            # 2. calculate the loss
+            loss_value  = loss(output, target)
+
+            # Calculate average validation loss
+            valid_loss = valid_loss + (
+                (1 / (batch_idx + 1)) * (loss_value.data.item() - valid_loss)
+            )
+
+    return valid_loss
+
+
+def optimize(data_loaders, model, optimizer, loss, n_epochs, save_path, interactive_tracking=False):
+    # initialize tracker for minimum validation loss
+    if interactive_tracking:
+        liveloss = PlotLosses(outputs=[MatplotlibPlot(after_subplot=after_subplot)])
+    else:
+        liveloss = None
+
+    valid_loss_min = None
+    logs = {}
+
+    # Learning rate scheduler: setup a learning rate scheduler that
+    # reduces the learning rate when the validation loss reaches a
+    # plateau
+    # HINT: look here: 
+    # https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+    scheduler  = lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+
+    for epoch in range(1, n_epochs + 1):
+
+        train_loss = train_one_epoch(
+            data_loaders["train"], model, optimizer, loss
+        )
+
+        valid_loss = valid_one_epoch(data_loaders["valid"], model, loss)
+
+        # print training/validation statistics
+        print(
+            "Epoch: {} \tTraining Loss: {:.6f} \tValidation Loss: {:.6f}".format(
+                epoch, train_loss, valid_loss
+            )
+        )
+
+        # If the validation loss decreases by more than 1%, save the model
+        if valid_loss_min is None or (
+                (valid_loss_min - valid_loss) / valid_loss_min > 0.01
+        ):
+            print(f"New minimum validation loss: {valid_loss:.6f}. Saving model ...")
+
+            # Save the weights to save_path
+            torch.save(model.state_dict(), save_path)
+
+            valid_loss_min = valid_loss
+
+        # Update learning rate, i.e., make a step in the learning rate scheduler
+        scheduler.step()
+
+        # Log the losses and the current learning rate
+        if interactive_tracking:
+            logs["loss"] = train_loss
+            logs["val_loss"] = valid_loss
+            logs["lr"] = optimizer.param_groups[0]["lr"]
+
+            liveloss.update(logs)
+            liveloss.send()
+
+
+def one_epoch_test(test_dataloader, model, loss):
+    # monitor test loss and accuracy
+    test_loss = 0.
+    correct = 0.
+    total = 0.
+
+    # set the module to evaluation mode
+    with torch.no_grad():
+
+        # set the model to evaluation mode
+        model.eval()
+
+        if torch.cuda.is_available():
+            model = model.cuda()
+
+        for batch_idx, (data, target) in tqdm(
+                enumerate(test_dataloader),
+                desc='Testing',
+                total=len(test_dataloader),
+                leave=True,
+                ncols=80
+        ):
+            # move data to GPU
+            if torch.cuda.is_available():
+                data, target = data.cuda(), target.cuda()
+
+            # 1. forward pass: compute predicted outputs by passing inputs to the model
+            logits  = model(data)
+            # 2. calculate the loss
+            loss_value  = loss(logits, target)
+
+            # update average test loss
+            test_loss = test_loss + ((1 / (batch_idx + 1)) * (loss_value.data.item() - test_loss))
+
+            # convert logits to predicted class
+            # HINT: the predicted class is the index of the max of the logits
+            pred  = torch.argmax(logits, dim=1)
+
+            # compare predictions to true label
+            correct += torch.sum(torch.squeeze(pred.eq(target.data.view_as(pred))).cpu())
+            total += data.size(0)
+
+    print('Test Loss: {:.6f}\n'.format(test_loss))
+
+    print('\nTest Accuracy: %2d%% (%2d/%2d)' % (
+        100. * correct / total, correct, total))
+
+    return test_loss
+
+batch_size = 32        # size of the minibatch for stochastic gradient descent (or Adam)
+valid_size = 0.2       # fraction of the training data to reserve for validation
+num_epochs = 1        # number of epochs for training
+num_classes = 50       # number of classes. Do not change this
+dropout = 0.2          # dropout for our model
+learning_rate = 0.001  # Learning rate for SGD (or Adam)
+opt = 'adam'            # optimizer. 'sgd' or 'adam'
+weight_decay = 1e-4     # regularization. Increase this to combat overfitting
